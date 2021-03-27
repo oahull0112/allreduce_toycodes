@@ -1,0 +1,6 @@
+compile with:
+mpif90 filename.f90 -o filename.x
+
+run with:
+
+mpirun -np 4 ./filename.x
