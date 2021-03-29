@@ -11,23 +11,22 @@ include 'mpif.h'
   ! and each task has its rows, but needs its columns
   ! so we gather the row data and send to the appropriate task for its columns
   ! once this is working, it's the biggest piece of the puzzle
-  ! the next step will be to do this as a 3D array for extra staging
+  ! the next step will be to do this as a 4D array for extra staging
 
   integer :: ntasks, my_id 
   integer :: ierror, tag
   integer :: bufsize
   integer :: my_start
-  integer :: my_nvals = 2 ! number of ints each task gets ! THIS WILL LIKELY GO AWAY
-  integer :: root = 0     ! send to mpi task 0
+  integer :: root 
 
-  integer :: ii, jj, kk
+  integer :: ii, jj, kk, irec
   integer :: nrows = 8    ! maybe change to 4 later for easier matrix size
   integer :: ncols = 8
-  integer :: n_myrows, n_mycols, mycols, myrows
+  integer :: myrow_start, n_myrows, n_mycols, mycols, myrows, max_n_mycols, root_colstart
   integer, allocatable :: tot_data(:,:) ! cheating...just to pick my_data from
   integer, allocatable :: my_rowdata(:,:)    !
-  integer, allocatable :: send_buffer(:) ! buffer to fill and reduce
-  integer, allocatable :: rec_buffer(:)
+  integer, allocatable :: send_buffer(:,:) ! buffer to fill and reduce
+  integer, allocatable :: rec_buffer(:,:)
   
   call MPI_INIT(ierror)
   call MPI_COMM_SIZE(MPI_COMM_WORLD, ntasks, ierror)
@@ -57,54 +56,71 @@ include 'mpif.h'
     enddo
   enddo
 
-  do kk = 1, ntasks
-    if (my_id == kk-1) then
-      write (*,*) "my id: ", my_id
-      do ii = 1, n_myrows
-        write(*,*) (my_rowdata(ii,jj), jj=1,ncols)
-      enddo
-    endif
-  enddo
+ ! do kk = 1, ntasks
+ !   if (my_id == kk-1) then
+ !     write (*,*) "my id: ", my_id
+ !     do ii = 1, n_myrows
+ !       write(*,*) (my_rowdata(ii,jj), jj=1,ncols)
+ !     enddo
+ !   endif
+ ! enddo
+
+  deallocate(tot_data) ! No cheating!
 
   ! determine who gets which columns (contiguous for now, then round-robin):
   ! note that doing contiguous for now just saves the staging step
   ! We can add the staging step in once everything else is working
 
+  n_mycols = ncols / ntasks
+  diff = mod(ncols, ntasks)
+  mycol_start = n_mycols*my_id
+  max_n_mycols = n_mycols+diff
+  if (my_id == ntasks-1) then
+    n_mycols = max_n_mycols
+  endif
 
+!  write(*,*) "my id: ", my_id, "mycol_start: ",  mycol_start, "n_mycols: ", n_mycols
 
-  ! Now, give each task their row data:
+  ! note: after this works in the conceptual way, then need to think about
+  ! the actual row/column efficiency
 
+  ! for now, just get working with even divisibility
+  ! then, change to round robin, then implement the indexing scheme
+  ! then can do non-even divisibility
+  allocate(send_buffer(nrows, max_n_mycols))
+  allocate(rec_buffer(nrows, max_n_mycols))
+  send_buffer = 0
+  bufsize = nrows*max_n_mycols
+  do irec = 1, ntasks ! just do first for now
+    root = irec-1 ! reduce to the root
+    ! now, need to put my row data in the correct spot in the buffer
+    root_colstart = root*n_mycols ! columns start in same place for each mpi task, depending on
+                                  ! the root task
+    write(*,*) "my_id: ", my_id,"n_mycols: ", n_mycols , "root: ", root, "root_colstart: ", root_colstart
+    do ii = 1, n_myrows ! let i be rows first. You are sending ALL the row data you have,
+                        ! just not for all columns.
+      do jj = 1, n_mycols ! we are not sending all columns! this is wrong ! ! number of columns to send let j be columns first
+                  ! the number of columns to send depends on the RECEIVING task
+        send_buffer(myrow_start+ii, jj) = my_rowdata(ii,jj+root_colstart)
+      enddo
+    enddo 
 
+    call MPI_REDUCE(send_buffer, rec_buffer, bufsize, MPI_INT, MPI_SUM, root, MPI_COMM_WORLD, ierror)
+  enddo ! irec
+  do kk = 1, ntasks
+    if (my_id == kk-1) then
+      write (*,*) "my id: ", my_id
+      do ii = 1, nrows
+        write(*,*) (rec_buffer(ii,jj), jj=1,max_n_mycols)
+      enddo
+    endif
+  enddo
+  ! the size of the send buffer is actually going to depend on which task is receiving
+  ! (if a task has more columns than the others...)
 
-!  bufsize = my_nvals*ntasks
-!  allocate(send_buffer(bufsize))
-!  allocate(rec_buffer(bufsize))
-!  send_buffer = 0
-!  rec_buffer = 0
-!  ! hold temp data:
-!  allocate(my_data(my_nvals))
-!  ! each task gets its own integers of data
-!  do ii = 1, my_nvals
-!    my_data(ii) = my_id*my_nvals+ii
-!  enddo
-!
-!  ! place data in appropriate spot
-!  my_start = my_id*my_nvals
-!  do ii = 1, my_nvals
-!    send_buffer(my_start+ii) = my_data(ii)
-!  enddo
-!
-!  call MPI_REDUCE(send_buffer, rec_buffer, bufsize, MPI_INT, MPI_SUM, root, MPI_COMM_WORLD, ierror)
-!
-!  if (my_id == root) then
-!    write(*,*) "rec_buffer for root: ", rec_buffer
-!  endif
-!  if (my_id == 1) then
-!    write(*,*) "rec_buffer for non-root: ", rec_buffer
-!  endif
-!
-!  deallocate(send_buffer)
-!  deallocate(my_data)
+  deallocate(my_rowdata)
+  deallocate(send_buffer)
+  deallocate(rec_buffer)
 
 call MPI_FINALIZE(ierror)
 END PROGRAM
