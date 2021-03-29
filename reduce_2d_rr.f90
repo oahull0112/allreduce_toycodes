@@ -7,7 +7,7 @@ include 'mpif.h'
   !   9 10 11 12 13 14 15 16
   !  17 18 19 20 21 22 23 24 
   !  25 26 27 28 29 30 31 32 ]
-  ! and each mpi task is assigned contiguous rows and contiguous columns
+  ! and each mpi task is assigned contiguous rows and round-robin columns
   ! and each task has its rows, but needs its columns
   ! so we gather the row data and send to the appropriate task for its columns
   ! once this is working, it's the biggest piece of the puzzle
@@ -19,13 +19,16 @@ include 'mpif.h'
   integer :: my_start
   integer :: root 
 
-  integer :: ii, jj, kk, irec
-  integer :: nrows = 8    ! maybe change to 4 later for easier matrix size
+  integer :: ii, jj, kk, irec, test
+  integer :: nrows = 8    
   integer :: ncols = 8
+  integer :: n_root_cols, root_col_ind
   integer :: myrow_start, n_myrows, n_mycols, mycols, myrows, max_n_mycols, root_colstart
-  integer, allocatable :: tot_data(:,:) ! cheating...just to pick my_data from
+  integer, allocatable :: ind_col(:)            ! ind_col(ncols) = mpi task that owns the column
+  integer, allocatable :: global_ncols(:) 
+  integer, allocatable :: tot_data(:,:)         ! cheating...just to pick my_data from
   integer, allocatable :: my_rowdata(:,:)    
-  integer, allocatable :: send_buffer(:,:) ! buffer to fill and reduce
+  integer, allocatable :: send_buffer(:,:)      ! buffer to fill and reduce
   integer, allocatable :: rec_buffer(:,:)
   
   call MPI_INIT(ierror)
@@ -44,11 +47,12 @@ include 'mpif.h'
   ! note that this is a bad method of load balancing
   n_myrows = nrows / ntasks
   diff = mod(nrows, ntasks)
-  myrow_start = n_myrows*my_id  ! remember to account for the non-zero indexing somewhere
+  myrow_start = n_myrows*my_id     ! remember to account for the non-zero indexing somewhere
   if (my_id == ntasks - 1) then
-    n_myrows = n_myrows+diff ! give the leftovers to the last task
+    n_myrows = n_myrows+diff       ! give the leftovers to the last task
   endif  
 
+  ! give each MPI task its row data
   allocate(my_rowdata(n_myrows, ncols))
   do ii = 1, n_myrows
     do jj = 1, ncols
@@ -58,44 +62,42 @@ include 'mpif.h'
 
   deallocate(tot_data) ! No cheating!
 
-  ! determine who gets which columns (contiguous for now, then round-robin):
-  ! note that doing contiguous for now just saves the staging step
-  ! We can add the staging step in once everything else is working
-
-  n_mycols = ncols / ntasks
-  diff = mod(ncols, ntasks)
-  mycol_start = n_mycols*my_id
-  max_n_mycols = n_mycols+diff
-  if (my_id == ntasks-1) then
-    n_mycols = max_n_mycols
-  endif
-
+  ! determine who gets which columns by distributing round-robin
+  allocate(global_ncols(ntasks))
+  allocate(ind_col(ncols))
+  global_ncols = 0
+  do ii = 1, ncols
+    jj = mod(ii-1, ntasks)                        ! ii-1 to start round robin at task 0
+    ind_col(ii) = jj                              ! says which column (ii) belongs to which task (jj)
+    global_ncols(jj+1) = global_ncols(jj+1) + 1   ! says how many columns each task owns
+  enddo
 
   ! note: after this works in the conceptual way, then need to think about
   ! the actual row/column efficiency
 
-  ! for now, just get working with even divisibility
-  ! then, change to round robin, then implement the indexing scheme
-  ! then can do non-even divisibility
+  max_n_mycols = MAXVAL(global_ncols)
   allocate(send_buffer(nrows, max_n_mycols))
   allocate(rec_buffer(nrows, max_n_mycols))
   send_buffer = 0
+  rec_buffer = 0
   bufsize = nrows*max_n_mycols
-  do irec = 1, ntasks ! just do first for now
-    root = irec-1 ! reduce to the root
-    ! now, need to put my row data in the correct spot in the buffer
-    root_colstart = root*n_mycols ! columns start in same place for each mpi task, depending on
-                                  ! the root task
-    do ii = 1, n_myrows ! let i be rows first. You are sending ALL the row data you have,
-                        ! just not for all columns.
-      do jj = 1, n_mycols ! we are not sending all columns! this is wrong ! ! number of columns to send let j be columns first
-                  ! the number of columns to send depends on the RECEIVING task
-        send_buffer(myrow_start+ii, jj) = my_rowdata(ii,jj+root_colstart)
+
+  do irec = 1, ntasks 
+    root = irec-1                             ! reduce to the root
+    n_root_cols = global_ncols(irec)          ! how many cols the root needs
+    do ii = 1, n_myrows 
+      do jj = 1, n_root_cols 
+        root_col_ind = irec + (ntasks*(jj-1)) ! this tells you which columns to grab
+                                              ! for the root, i.e. grabs the round-robin cols
+        send_buffer(myrow_start+ii, jj) = my_rowdata(ii,root_col_ind)
       enddo
     enddo 
 
-    call MPI_REDUCE(send_buffer, rec_buffer, bufsize, MPI_INT, MPI_SUM, root, MPI_COMM_WORLD, ierror)
-  enddo ! irec
+   call MPI_REDUCE(send_buffer, rec_buffer, bufsize, MPI_INT, MPI_SUM, root, MPI_COMM_WORLD, ierror)
+   send_buffer = 0 ! reset the buffer (this may not be necessary?)
+  enddo
+
+
   do kk = 1, ntasks
     if (my_id == kk-1) then
       write (*,*) "my id: ", my_id
@@ -104,12 +106,12 @@ include 'mpif.h'
       enddo
     endif
   enddo
-  ! the size of the send buffer is actually going to depend on which task is receiving
-  ! (if a task has more columns than the others...)
 
   deallocate(my_rowdata)
   deallocate(send_buffer)
   deallocate(rec_buffer)
+  deallocate(global_ncols)
+  deallocate(ind_col)
 
 call MPI_FINALIZE(ierror)
 END PROGRAM
