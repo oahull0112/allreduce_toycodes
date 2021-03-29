@@ -20,12 +20,12 @@ include 'mpif.h'
   integer :: my_nvals = 2 ! number of ints each task gets ! THIS WILL LIKELY GO AWAY
   integer :: root = 0     ! send to mpi task 0
 
-  integer :: ii, jj
+  integer :: ii, jj, kk
   integer :: nrows = 8    ! maybe change to 4 later for easier matrix size
   integer :: ncols = 8
   integer :: n_myrows, n_mycols, mycols, myrows
   integer, allocatable :: tot_data(:,:) ! cheating...just to pick my_data from
-  integer, allocatable :: my_data(:)    !
+  integer, allocatable :: my_rowdata(:,:)    !
   integer, allocatable :: send_buffer(:) ! buffer to fill and reduce
   integer, allocatable :: rec_buffer(:)
   
@@ -41,34 +41,30 @@ include 'mpif.h'
     enddo
   enddo
 
-  if (my_id == root) then
-    do ii = 1, nrows
-      write(*,*) (tot_data(ii, jj), jj=1,ncols)
-    enddo
-  endif
-
-  _REDUCE(sbuf, rbuf, count, stype, op, root, comm, ierr)! generate total data:
-  allocate(tot_data(nrows, ncols))
-  do ii = 1, nrows
-    do jj = 1, ncols
-      tot_data(ii, jj) = ii*jj
-    enddo
-  enddo
-
-  if (my_id == root) then
-    do ii = 1, nrows
-      write(*,*) (tot_data(ii, jj), jj=1,ncols)
-    enddo
-  endif
   ! determine who gets which rows (contiguous):
-  ! NOTE: I am just going to be doing this with even divisibility first
-  !       so I will need to come back and check that the remainder feature actually works
+  ! note that this is a bad method of load balancing
   n_myrows = nrows / ntasks
-  diff = ntasks - (n_myrows * ntasks)
+  diff = mod(nrows, ntasks)
   myrow_start = n_myrows*my_id  ! remember to account for the non-zero indexing somewhere
   if (my_id == ntasks - 1) then
     n_myrows = n_myrows+diff ! give the leftovers to the last task
   endif  
+
+  allocate(my_rowdata(n_myrows, ncols))
+  do ii = 1, n_myrows
+    do jj = 1, ncols
+      my_rowdata(ii, jj) = tot_data(ii+myrow_start, jj)
+    enddo
+  enddo
+
+  do kk = 1, ntasks
+    if (my_id == kk-1) then
+      write (*,*) "my id: ", my_id
+      do ii = 1, n_myrows
+        write(*,*) (my_rowdata(ii,jj), jj=1,ncols)
+      enddo
+    endif
+  enddo
 
   ! determine who gets which columns (contiguous for now, then round-robin):
   ! note that doing contiguous for now just saves the staging step
