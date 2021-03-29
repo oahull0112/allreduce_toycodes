@@ -56,15 +56,6 @@ include 'mpif.h'
     enddo
   enddo
 
- ! do kk = 1, ntasks
- !   if (my_id == kk-1) then
- !     write (*,*) "my id: ", my_id
- !     do ii = 1, n_myrows
- !       write(*,*) (my_rowdata(ii,jj), jj=1,ncols)
- !     enddo
- !   endif
- ! enddo
-
   deallocate(tot_data) ! No cheating!
 
   ! determine who gets which columns (contiguous for now, then round-robin):
@@ -79,7 +70,6 @@ include 'mpif.h'
     n_mycols = max_n_mycols
   endif
 
-!  write(*,*) "my id: ", my_id, "mycol_start: ",  mycol_start, "n_mycols: ", n_mycols
 
   ! note: after this works in the conceptual way, then need to think about
   ! the actual row/column efficiency
@@ -96,7 +86,6 @@ include 'mpif.h'
     ! now, need to put my row data in the correct spot in the buffer
     root_colstart = root*n_mycols ! columns start in same place for each mpi task, depending on
                                   ! the root task
-    write(*,*) "my_id: ", my_id,"n_mycols: ", n_mycols , "root: ", root, "root_colstart: ", root_colstart
     do ii = 1, n_myrows ! let i be rows first. You are sending ALL the row data you have,
                         ! just not for all columns.
       do jj = 1, n_mycols ! we are not sending all columns! this is wrong ! ! number of columns to send let j be columns first
